@@ -10,7 +10,7 @@
 ;; Package-Requires: ()
 ;; Last-Updated:
 ;;           By:
-;;     Update #: 16
+;;     Update #: 17
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -97,11 +97,18 @@
                    (org-element-property :end element))
           (let* ((block-start (org-element-property :begin element))
                  (end-pos     (org-element-property :end element))
+                 ;; `:end' includes the blank lines following the block, so
+                 ;; back them out before looking for the `#+end_...' line.
+                 (last-pos    (max block-start
+                                   (- end-pos
+                                      (or (org-element-property
+                                           :post-blank element)
+                                          0))))
                  (end-line-beg (save-excursion
-                                 (goto-char (max (point-min) (1- end-pos)))
+                                 (goto-char (max (point-min) (1- last-pos)))
                                  (line-beginning-position)))
                  (end-line-end (save-excursion
-                                 (goto-char (max (point-min) (1- end-pos)))
+                                 (goto-char (max (point-min) (1- last-pos)))
                                  (line-end-position)))
                  (base-indent (save-excursion
                                 (goto-char block-start)
