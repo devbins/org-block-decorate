@@ -10,7 +10,7 @@
 ;; Package-Requires: ()
 ;; Last-Updated:
 ;;           By:
-;;     Update #: 17
+;;     Update #: 18
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -155,16 +155,63 @@
               (put-text-property end-line-beg end-line-end
                                  'wrap-prefix mid))))))))
 
+(defconst org-block-decorate--managed-props
+  '(line-prefix wrap-prefix display font-lock-multiline)
+  "Text properties managed by `org-block-decorate-mode'.")
+
 (defun org-block-decorate--setup ()
   "Set up font-lock for block brackets in the current Org buffer."
   (setq-local font-lock-extra-managed-props
-              (append '(line-prefix wrap-prefix display font-lock-multiline)
+              (append org-block-decorate--managed-props
                       font-lock-extra-managed-props))
   (font-lock-add-keywords nil
                           '((org-block-decorate--fontify))
                           'append)
   (font-lock-flush))
 
+(defun org-block-decorate--teardown ()
+  "Remove block bracket decorations from the current Org buffer."
+  (font-lock-remove-keywords nil '((org-block-decorate--fontify)))
+  (setq-local font-lock-extra-managed-props
+              (remq 'line-prefix
+                    (remq 'wrap-prefix
+                          (remq 'display
+                                (remq 'font-lock-multiline
+                                      font-lock-extra-managed-props)))))
+  ;; Explicitly clear the properties we set, so disabling takes effect
+  ;; immediately even on regions font-lock won't refontify.
+  (save-restriction
+    (widen)
+    (dolist (prop org-block-decorate--managed-props)
+      (remove-text-properties (point-min) (point-max)
+                              (list prop nil))))
+  (font-lock-flush))
+
+;;;###autoload
+(define-minor-mode org-block-decorate-mode
+  "Toggle bracket-line decoration for Org source blocks."
+  :group 'org-block-decorate
+  :lighter " block-dc"
+  (if org-block-decorate-mode
+      (org-block-decorate--setup)
+    (org-block-decorate--teardown)))
+
+;;;###autoload
+(defun org-block-decorate-mode-enable ()
+  "Enable `org-block-decorate-mode' in the current buffer."
+  (org-block-decorate-mode 1))
+
+;;;###autoload
+(defun org-block-decorate-mode-disable ()
+  "Disable `org-block-decorate-mode' in the current buffer."
+  (org-block-decorate-mode -1))
+
+;;;###autoload
+(define-global-minor-mode global-org-block-decorate-mode
+  org-block-decorate-mode
+  (lambda ()
+    (when (derived-mode-p 'org-mode)
+      (org-block-decorate-mode 1))))
 
 (provide 'org-block-decorate)
 
