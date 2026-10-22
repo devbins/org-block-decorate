@@ -10,7 +10,7 @@
 ;; Package-Requires: ()
 ;; Last-Updated:
 ;;           By:
-;;     Update #: 31
+;;     Update #: 32
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -109,6 +109,17 @@ so it works whether or not point is on that line."
   (min (+ line-beg base-indent)
        (save-excursion (goto-char line-beg) (line-end-position))))
 
+(defun org-block-decorate--set-wrap-prefix (beg end value)
+  "Set `wrap-prefix' to VALUE on [BEG END], or remove it when VALUE is nil.
+Text properties are part of the buffer state, so changing them normally
+flags the buffer as modified even though its text is untouched.  Wrapping
+the change in `with-silent-modifications' keeps enabling and disabling
+the mode from dirtying the file."
+  (with-silent-modifications
+    (if value
+        (put-text-property beg end 'wrap-prefix value)
+      (remove-text-properties beg end '(wrap-prefix nil)))))
+
 (defun org-block-decorate--fontify (start end)
   "Draw block brackets for Org blocks overlapping [START END].
 Registered as a `jit-lock' function.  It only manages overlays and the
@@ -170,14 +181,15 @@ movement keep behaving normally."
                 ;; [start end] would leave stale overlays behind and let
                 ;; brackets accumulate on each refontification.
                 (org-block-decorate--clear block-start end-pos)
-                (remove-text-properties block-start end-pos '(wrap-prefix nil))
+                (org-block-decorate--set-wrap-prefix block-start end-pos nil)
                 ;; 1. 起始行：括号画在块起始列（缩进之后），与块左缘对齐。
                 (let ((lb (line-beginning-position)))
                   (org-block-decorate--put
                    (org-block-decorate--bracket-pos lb base-indent)
                    (line-end-position)
                    org-block-bracket-top)
-                  (put-text-property lb (line-end-position) 'wrap-prefix wrap))
+                  (org-block-decorate--set-wrap-prefix
+                   lb (line-end-position) wrap))
                 ;; 2. 中间行
                 (save-excursion
                   (goto-char block-start)
@@ -195,15 +207,15 @@ movement keep behaving normally."
                        pos le
                        (concat (make-string (- (+ lb base-indent) pos) ?\s)
                                org-block-bracket-middle))
-                      (put-text-property lb le 'wrap-prefix wrap))
+                      (org-block-decorate--set-wrap-prefix lb le wrap))
                     (forward-line 1)))
                 ;; 3. 结束行
                 (org-block-decorate--put
                  (org-block-decorate--bracket-pos end-line-beg base-indent)
                  end-line-end
                  org-block-bracket-bottom)
-                (put-text-property end-line-beg end-line-end
-                                   'wrap-prefix wrap)))))))))
+                (org-block-decorate--set-wrap-prefix
+                 end-line-beg end-line-end wrap)))))))))
 
 (defun org-block-decorate--setup ()
   "Set up bracket decorations for the current Org buffer."
@@ -217,8 +229,7 @@ movement keep behaving normally."
   (org-block-decorate--clear (point-min) (point-max))
   (save-restriction
     (widen)
-    (remove-text-properties (point-min) (point-max)
-                            '(wrap-prefix nil))))
+    (org-block-decorate--set-wrap-prefix (point-min) (point-max) nil)))
 
 ;;;###autoload
 (define-minor-mode org-block-decorate-mode
