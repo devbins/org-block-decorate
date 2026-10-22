@@ -10,7 +10,7 @@
 ;; Package-Requires: ()
 ;; Last-Updated:
 ;;           By:
-;;     Update #: 18
+;;     Update #: 28
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -73,119 +73,137 @@
   :type 'string
   :group 'org-block-decorate)
 
-(defun org-block-decorate--hide-indent (base-indent)
-  "Hide up to BASE-INDENT leading whitespace on the current line."
-  (when (> base-indent 0)
-    (let ((indent (min base-indent (current-indentation))))
-      (when (> indent 0)
-        (put-text-property (line-beginning-position)
-                           (+ (line-beginning-position) indent)
-                           'display "")))))
+(defconst org-block-decorate--overlay-prop 'org-block-decorate
+  "Overlay property marking decorations owned by this mode.")
 
-(defun org-block-decorate--fontify (limit)
-  "Fontify Org blocks with bracket prefixes, searching up to LIMIT."
-  (while (re-search-forward "^[ \t]*#\\+begin_\\(src\\|example\\|export\\|quote\\)\\>"
-                            limit t)
-    ;; 用 save-excursion 包住整块处理：
-    ;; 处理中的 goto-char 不会把 point 推到 limit 之外，
-    ;; 循环结束时 point 回到匹配末尾，while 安全推进。
-    (save-excursion
-      (goto-char (match-beginning 0))
-      (let ((element (org-element-at-point)))
-        (when (and (memq (org-element-type element)
-                         '(src-block example-block export-block quote-block))
-                   (org-element-property :end element))
-          (let* ((block-start (org-element-property :begin element))
-                 (end-pos     (org-element-property :end element))
-                 ;; `:end' includes the blank lines following the block, so
-                 ;; back them out before looking for the `#+end_...' line.
-                 (last-pos    (max block-start
-                                   (- end-pos
-                                      (or (org-element-property
-                                           :post-blank element)
-                                          0))))
-                 (end-line-beg (save-excursion
-                                 (goto-char (max (point-min) (1- last-pos)))
-                                 (line-beginning-position)))
-                 (end-line-end (save-excursion
-                                 (goto-char (max (point-min) (1- last-pos)))
-                                 (line-end-position)))
-                 (base-indent (save-excursion
-                                (goto-char block-start)
-                                (current-indentation)))
-                 (indent-str (make-string base-indent ?\s))
-                 (top (concat indent-str
-                              (propertize org-block-bracket-top
-                                          'face 'org-block-bracket-face)))
-                 (mid (concat indent-str
-                              (propertize org-block-bracket-middle
-                                          'face 'org-block-bracket-face)))
-                 (bot (concat indent-str
-                              (propertize org-block-bracket-bottom
-                                          'face 'org-block-bracket-face))))
-            ;; ★ 关键：标记整个块为"多行区域"，
-            ;; 让 font-lock 在块内任何文本变化时重新字体化整个块。
-            (put-text-property block-start end-pos
-                               'font-lock-multiline t)
-            ;; 1. 起始行
-            (save-excursion
-              (goto-char block-start)
-              (org-block-decorate--hide-indent base-indent)
-              (put-text-property (line-beginning-position) (line-end-position)
-                                 'line-prefix top)
-              (put-text-property (line-beginning-position) (line-end-position)
-                                 'wrap-prefix mid))
-            ;; 2. 中间行
-            (save-excursion
-              (goto-char block-start)
-              (forward-line 1)
-              (while (< (point) end-line-beg)
-                (org-block-decorate--hide-indent base-indent)
-                (put-text-property (line-beginning-position) (line-end-position)
-                                   'line-prefix mid)
-                (put-text-property (line-beginning-position) (line-end-position)
-                                   'wrap-prefix mid)
-                (forward-line 1)))
-            ;; 3. 结束行
-            (save-excursion
-              (goto-char end-line-beg)
-              (org-block-decorate--hide-indent base-indent)
-              (put-text-property end-line-beg end-line-end
-                                 'line-prefix bot)
-              (put-text-property end-line-beg end-line-end
-                                 'wrap-prefix mid))))))))
+(defun org-block-decorate--clear (start end)
+  "Delete `org-block-decorate' overlays between START and END."
+  (dolist (ov (overlays-in start end))
+    (when (overlay-get ov org-block-decorate--overlay-prop)
+      (delete-overlay ov))))
 
-(defconst org-block-decorate--managed-props
-  '(line-prefix wrap-prefix display font-lock-multiline)
-  "Text properties managed by `org-block-decorate-mode'.")
+(defun org-block-decorate--put (beg end string)
+  "Overlay [BEG END] so STRING (a bracket) shows just before BEG.
+The bracket is drawn purely as display (`before-string'), so it never
+touches or hides the buffer's real indentation."
+  (let ((ov (make-overlay beg end nil t nil)))
+    (overlay-put ov org-block-decorate--overlay-prop t)
+    (overlay-put ov 'before-string
+                 (propertize string 'face 'org-block-bracket-face))
+    (overlay-put ov 'evaporate t)
+    ov))
+
+(defun org-block-decorate--bracket-pos (line-beg base-indent)
+  "Buffer position of the block's left edge on the line starting at LINE-BEG.
+That is BASE-INDENT columns in from LINE-BEG, clamped to that line's end.
+`line-end-position' is evaluated at LINE-BEG, not at the caller's point,
+so it works whether or not point is on that line."
+  (min (+ line-beg base-indent)
+       (save-excursion (goto-char line-beg) (line-end-position))))
+
+(defun org-block-decorate--fontify (start end)
+  "Draw block brackets for Org blocks overlapping [START END].
+Registered as a `jit-lock' function.  It only manages overlays and the
+display-only `wrap-prefix' property; it never modifies or hides the
+buffer's real indentation, so editing, `TAB'/`org-cycle' and cursor
+movement keep behaving normally."
+  (save-excursion
+    (save-restriction
+      (widen)
+      ;; jit-lock often hands us a partial region that begins in the middle
+      ;; of a block.  Move START back to that block's beginning so we always
+      ;; clear and redraw whole blocks (otherwise stale overlays survive and
+      ;; brackets accumulate on every refontification, e.g. fold/unfold).
+      (goto-char start)
+      (let ((b (save-excursion
+                 (re-search-backward
+                  "^[ \t]*#\\+begin_\\(src\\|example\\|export\\|quote\\)\\>" nil t))))
+        (when b
+          (save-excursion
+            (goto-char b)
+            (let ((el (org-element-at-point)))
+              (when (and el (org-element-property :end el)
+                         (>= (org-element-property :end el) start))
+                (setq start b))))))
+      (org-block-decorate--clear start end)
+      (goto-char start)
+      (while (re-search-forward
+              "^[ \t]*#\\+begin_\\(src\\|example\\|export\\|quote\\)\\>"
+              end t)
+        (save-excursion
+          (goto-char (match-beginning 0))
+          (let ((element (org-element-at-point)))
+            (when (and (memq (org-element-type element)
+                             '(src-block example-block export-block quote-block))
+                       (org-element-property :end element))
+              (let* ((block-start (org-element-property :begin element))
+                     (end-pos     (org-element-property :end element))
+                     ;; `:end' includes the blank lines following the block, so
+                     ;; back them out before looking for the `#+end_...' line.
+                     (last-pos    (max block-start
+                                       (- end-pos
+                                          (or (org-element-property
+                                               :post-blank element)
+                                              0))))
+                     (end-line-beg (save-excursion
+                                     (goto-char (max (point-min) (1- last-pos)))
+                                     (line-beginning-position)))
+                     (end-line-end (save-excursion
+                                     (goto-char (max (point-min) (1- last-pos)))
+                                     (line-end-position)))
+                     (base-indent (save-excursion
+                                    (goto-char block-start)
+                                    (current-indentation)))
+                     (wrap (concat (make-string base-indent ?\s)
+                                   (propertize org-block-bracket-middle
+                                               'face 'org-block-bracket-face))))
+                ;; Clear this block's full range first: the region we were
+                ;; asked to fontify may be only part of it, so clearing just
+                ;; [start end] would leave stale overlays behind and let
+                ;; brackets accumulate on each refontification.
+                (org-block-decorate--clear block-start end-pos)
+                (remove-text-properties block-start end-pos '(wrap-prefix nil))
+                ;; 1. 起始行：括号画在块起始列（缩进之后），与块左缘对齐。
+                (let ((lb (line-beginning-position)))
+                  (org-block-decorate--put
+                   (org-block-decorate--bracket-pos lb base-indent)
+                   (line-end-position)
+                   org-block-bracket-top)
+                  (put-text-property lb (line-end-position) 'wrap-prefix wrap))
+                ;; 2. 中间行
+                (save-excursion
+                  (goto-char block-start)
+                  (forward-line 1)
+                  (while (< (point) end-line-beg)
+                    (let ((lb (line-beginning-position)))
+                      (org-block-decorate--put
+                       (org-block-decorate--bracket-pos lb base-indent)
+                       (line-end-position)
+                       org-block-bracket-middle)
+                      (put-text-property lb (line-end-position) 'wrap-prefix wrap))
+                    (forward-line 1)))
+                ;; 3. 结束行
+                (org-block-decorate--put
+                 (org-block-decorate--bracket-pos end-line-beg base-indent)
+                 end-line-end
+                 org-block-bracket-bottom)
+                (put-text-property end-line-beg end-line-end
+                                   'wrap-prefix wrap)))))))))
 
 (defun org-block-decorate--setup ()
-  "Set up font-lock for block brackets in the current Org buffer."
-  (setq-local font-lock-extra-managed-props
-              (append org-block-decorate--managed-props
-                      font-lock-extra-managed-props))
-  (font-lock-add-keywords nil
-                          '((org-block-decorate--fontify))
-                          'append)
-  (font-lock-flush))
+  "Set up bracket decorations for the current Org buffer."
+  (jit-lock-register #'org-block-decorate--fontify)
+  ;; Force an initial pass over the whole buffer.
+  (org-block-decorate--fontify (point-min) (point-max)))
 
 (defun org-block-decorate--teardown ()
-  "Remove block bracket decorations from the current Org buffer."
-  (font-lock-remove-keywords nil '((org-block-decorate--fontify)))
-  (setq-local font-lock-extra-managed-props
-              (remq 'line-prefix
-                    (remq 'wrap-prefix
-                          (remq 'display
-                                (remq 'font-lock-multiline
-                                      font-lock-extra-managed-props)))))
-  ;; Explicitly clear the properties we set, so disabling takes effect
-  ;; immediately even on regions font-lock won't refontify.
+  "Remove bracket decorations from the current Org buffer."
+  (jit-lock-unregister #'org-block-decorate--fontify)
+  (org-block-decorate--clear (point-min) (point-max))
   (save-restriction
     (widen)
-    (dolist (prop org-block-decorate--managed-props)
-      (remove-text-properties (point-min) (point-max)
-                              (list prop nil))))
-  (font-lock-flush))
+    (remove-text-properties (point-min) (point-max)
+                            '(wrap-prefix nil))))
 
 ;;;###autoload
 (define-minor-mode org-block-decorate-mode
