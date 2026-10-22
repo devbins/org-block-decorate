@@ -10,7 +10,7 @@
 ;; Package-Requires: ()
 ;; Last-Updated:
 ;;           By:
-;;     Update #: 28
+;;     Update #: 31
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -85,12 +85,20 @@
 (defun org-block-decorate--put (beg end string)
   "Overlay [BEG END] so STRING (a bracket) shows just before BEG.
 The bracket is drawn purely as display (`before-string'), so it never
-touches or hides the buffer's real indentation."
-  (let ((ov (make-overlay beg end nil t nil)))
+touches or hides the buffer's real indentation.
+A blank line gives BEG = END, and `evaporate' would delete such a
+zero-width overlay immediately, so cover the following newline instead;
+either way the bracket is display-only and the text is untouched."
+  (let* ((end (if (= beg end) (min (point-max) (1+ beg)) end))
+         (ov  (make-overlay beg end nil t nil)))
     (overlay-put ov org-block-decorate--overlay-prop t)
     (overlay-put ov 'before-string
                  (propertize string 'face 'org-block-bracket-face))
-    (overlay-put ov 'evaporate t)
+    ;; `evaporate' removes the overlay when its text is deleted.  A
+    ;; zero-width overlay can only survive at `point-max', where it cannot
+    ;; be widened and `evaporate' would delete it at once.
+    (unless (= beg end)
+      (overlay-put ov 'evaporate t))
     ov))
 
 (defun org-block-decorate--bracket-pos (line-beg base-indent)
@@ -175,12 +183,19 @@ movement keep behaving normally."
                   (goto-char block-start)
                   (forward-line 1)
                   (while (< (point) end-line-beg)
-                    (let ((lb (line-beginning-position)))
+                    (let* ((lb  (line-beginning-position))
+                           (le  (line-end-position))
+                           (pos (org-block-decorate--bracket-pos lb base-indent)))
+                      ;; The bracket position is clamped to the line's end, so
+                      ;; on a blank line (shorter than BASE-INDENT) it would
+                      ;; land in column 0 instead of the block's left column.
+                      ;; Pad the display-only string to keep the vertical line
+                      ;; aligned with the rest of the block.
                       (org-block-decorate--put
-                       (org-block-decorate--bracket-pos lb base-indent)
-                       (line-end-position)
-                       org-block-bracket-middle)
-                      (put-text-property lb (line-end-position) 'wrap-prefix wrap))
+                       pos le
+                       (concat (make-string (- (+ lb base-indent) pos) ?\s)
+                               org-block-bracket-middle))
+                      (put-text-property lb le 'wrap-prefix wrap))
                     (forward-line 1)))
                 ;; 3. 结束行
                 (org-block-decorate--put
