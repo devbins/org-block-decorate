@@ -10,7 +10,7 @@
 ;; Package-Requires: ()
 ;; Last-Updated:
 ;;           By:
-;;     Update #: 32
+;;     Update #: 33
 ;; URL:
 ;; Doc URL:
 ;; Keywords:
@@ -157,18 +157,23 @@ movement keep behaving normally."
                        (org-element-property :end element))
               (let* ((block-start (org-element-property :begin element))
                      (end-pos     (org-element-property :end element))
-                     ;; `:end' includes the blank lines following the block, so
-                     ;; back them out before looking for the `#+end_...' line.
-                     (last-pos    (max block-start
-                                       (- end-pos
-                                          (or (org-element-property
-                                               :post-blank element)
-                                              0))))
+                     ;; `:end' includes the blank lines following the block.
+                     ;; `:post-blank' only counts those lines, not their
+                     ;; characters, so subtracting it is wrong as soon as a
+                     ;; blank line carries indentation (e.g. "  \n"): the
+                     ;; result then points inside that indented blank line and
+                     ;; the bottom bracket lands below the `#+end_...' line.
+                     ;; Skipping the trailing whitespace lands on the last
+                     ;; character of the `#+end_...' line in every case.
+                     (end-line-pos (save-excursion
+                                     (goto-char end-pos)
+                                     (skip-chars-backward " \t\n" block-start)
+                                     (point)))
                      (end-line-beg (save-excursion
-                                     (goto-char (max (point-min) (1- last-pos)))
+                                     (goto-char end-line-pos)
                                      (line-beginning-position)))
                      (end-line-end (save-excursion
-                                     (goto-char (max (point-min) (1- last-pos)))
+                                     (goto-char end-line-pos)
                                      (line-end-position)))
                      (base-indent (save-excursion
                                     (goto-char block-start)
