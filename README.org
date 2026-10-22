@@ -1,1 +1,96 @@
 * org-block-decorate
+** 效果
+   用括号线条装饰 Org mode 的 src / example / export / quote 块，让块的边界在视觉上更清晰。
+
+   开启前：
+   ╭─#+begin_src emacs-lisp
+   │(mssage "hello")
+   ╰─#+end_src
+   开启后：
+   #+begin_src org
+   ╭─#+begin_src emacs-lisp
+   │(mssage "hello")
+   ╰─#+end_src
+   #+end_src
+   块的首、中、尾行分别加上 =╭─= / =│ = / =╰─= 前缀，括号始终对齐在
+   块自身的起始列（无论块嵌套在多少层标题下）。括号通过 overlay 的
+   =before-string= 绘制，属于纯显示层，不改动、也不隐藏 buffer 里块
+   自身的真实缩进，因此块内仍可正常 =TAB= 缩进、回到行首、编辑。
+
+** 安装
+   straight + use-package：
+   #+begin_src emacs-lisp
+   (use-package org-block-decorate
+     :straight (:host github :repo "devbins/org-block-decorate")
+     :hook (org-mode . org-block-decorate-mode))
+   #+end_src
+   手动加载：
+   #+begin_src emacs-lisp
+   (add-to-list 'load-path "/path/to/org-block-decorate")
+   (require 'org-block-decorate)
+   (add-hook 'org-mode-hook #'org-block-decorate-mode)
+   #+end_src
+   或者只给当前 buffer 开关：
+   #+begin_src emacs-lisp
+   (org-block-decorate-mode 1)   ; 开启
+   (org-block-decorate-mode -1)  ; 关闭
+   #+end_src
+   全局开关（所有 org-mode buffer）：
+   #+begin_src emacs-lisp
+   (global-org-block-decorate-mode 1)
+   #+end_src
+
+   =org-block-decorate-mode= 是一个 minor mode，开启时为当前 Org buffer
+   注册 font-lock 关键字并把 =line-prefix= / =wrap-prefix= / =display= /
+   =font-lock-multiline= 加入 =font-lock-extra-managed-props=；关闭时会
+   移除关键字、清理这些文本属性，所以随时能关掉、不会残留括号。
+
+* 自定义
+** 括号字符
+   #+begin_src lisp
+   (setq org-block-bracket-top    "╭─"
+         org-block-bracket-middle "│ "
+         org-block-bracket-bottom "╰─")
+   #+end_src
+
+
+   | 变量                      | 默认值 | 说明        |
+   |--------------------------+-------+------------|
+   | =org-block-bracket-top=    | =╭─=    | 首行左上角   |
+   | =org-block-bracket-middle= | =│=     | 中间行左竖线 |
+   | =org-block-bracket-bottom= | =╰─=    | 末行左下角   |
+
+   三个变量都是 =string= 类型，用 =M-x customize-group RET org-block-decorate RET=
+   也可以改。改完后需要 =M-x font-lock-flush= （或重启 buffer）才会重绘。
+
+   粗一点的风格：
+
+   #+begin_src emacs-lisp
+   (setq org-block-bracket-top    "┏━"
+         org-block-bracket-middle "┃ "
+         org-block-bracket-bottom "┗━")
+   #+end_src
+
+** 颜色
+
+   括号统一使用 =org-block-bracket-face= ，默认继承 =shadow= 并设为 =light= 字重，
+   所以在明暗主题下都会自动跟随。想更显眼：
+
+   #+begin_src emacs-lisp
+   (set-face-attribute 'org-block-bracket-face nil
+                       :inherit 'font-lock-comment-face)
+   #+end_src
+
+** 实现要点
+   - 匹配 =^[ \t]*#\+begin_\(src\|example\|export\|quote\)= ，再用
+     =org-element-at-point= 拿到块元素，因此只对 org 语法认可的块生效，
+     行首缩进多少都能识别。
+   - 通过 overlay 的 =before-string= 在块的起始列（缩进之后）绘制括号，
+     长行折行用 =wrap-prefix= 保证对齐；括号是纯显示层，不修改、不隐藏
+     buffer 里的真实缩进，因此块内可正常编辑、=TAB= 缩进、回到行首。
+   - 装饰由 =jit-lock= 驱动：块内任意一处编辑都会触发整块重新绘制，
+     关掉 minor mode 时删除所有 overlay 并清除 =wrap-prefix=，不会残留。
+
+*** License
+
+    GPL-3.0，见 [[file:LICENSE][LICENSE]]。
